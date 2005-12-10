@@ -1,0 +1,8 @@
+MANIFEST
+Makefile.PL
+ChangeLog
+lib/Net/YADIS/Server.pm
+t/00-no-services.t
+t/01-openid.t
+t/02-escape.t
+META.yml                                 Module meta-data (added by MakeMaker)

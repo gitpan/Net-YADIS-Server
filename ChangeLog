@@ -1,0 +1,2 @@
+0.01:
+	- initial release.  working test suite.  Should move to using a real XML creation library.
