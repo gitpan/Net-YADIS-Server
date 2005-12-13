@@ -1,2 +1,5 @@
+0.02:
+       - Use XML::Writer instead of making XML by hand.  Support multiple values for elements within a service container.
+
 0.01:
 	- initial release.  working test suite.  Should move to using a real XML creation library.

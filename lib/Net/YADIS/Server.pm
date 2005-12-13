@@ -2,52 +2,53 @@
 
 use strict;
 use Carp;
+use XML::Writer;
 
 ############################################################################
 package Net::YADIS::Server;
 
 use vars qw($VERSION);
-$VERSION = "0.01";
+$VERSION = "0.02";
 
 use fields (
-            'namespaces', # Arrayref of namespaces for the capabilities document
+            'namespaces', # Hashref of namespaces for the capabilities document ( prefix => uri )
             'services',   # Arrayref of services for the capabilities document
             );
 
 sub new {
-    my $pkg = shift;
-    my $self = bless {}, $pkg;
+    my Net::YADIS::Server $self = shift;
+    $self = fields::new($self) unless ref $self;
 
     Carp::croak "Unknown arguments passed to Net::YADIS::Server" if @_;
 
     $self->{'namespaces'} = ();
     $self->{'services'}   = ();
 
-    # Setup the two default namespaces of an XRD
+    # Setup the two default namespaces for XRD and XRDS
     $self->add_namespaces(
-                          'xmlns'      => 'xri://$xrd*($v*2.0)',
-                          'xmlns:xrds' => 'xri://$xrds',
+                          'xmlns' => 'xri://$xrd*($v*2.0)',
+                          'xrds'  => 'xri://$xrds',
                           );
 
     return $self;
 }
 
 sub add_namespaces {
-    my $self = shift;
+    my Net::YADIS::Server $self = shift;
     my %namespaces = @_;
 
     Carp::croak "Net::YADIS::Server::add_namespaces requires a hash-ref"
         unless %namespaces;
 
-    foreach my $ns (keys %namespaces) {
-        push @{$self->{'namespaces'}}, { $ns => $namespaces{$ns} };
+    foreach my $prefix (keys %namespaces) {
+        $self->{'namespaces'}->{$prefix} = $namespaces{$prefix};
     }
 
     return 1;
 }
 
 sub add_service {
-    my $self = shift;
+    my Net::YADIS::Server $self = shift;
     my %opts = @_;
 
     Carp::croak '"type" and "URI" elements must be passed to Net::YADIS::Server::add_service'
@@ -71,32 +72,36 @@ sub add_service {
 }
 
 sub get_document {
-    my $self = shift;
+    my Net::YADIS::Server $self = shift;
 
     # Make sure we have namespaces
     Carp::croak "Your server has no namespaces defined, something is really " .
         "wrong since the constructor should setup two for you."
-        unless ref $self->{'namespaces'} eq 'ARRAY' &&
-        @{$self->{'namespaces'}};
+        unless ref $self->{'namespaces'} eq 'HASH' && %{$self->{'namespaces'}};
 
     my $doc;
-    $doc .= '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
-    $doc .= "<xrds:XRDS\n";
 
-    # Add the namespaces with linebreaks
-    my $c = 0;
-    foreach (@{$self->{'namespaces'}}) {
-        my ($ns, $des) = %$_;
-        $ns  = $self->_exml($ns);
-        $des = $self->_exml($des);
+    my $writer = new XML::Writer(
+                                 OUTPUT => \$doc,
+                                 NAMESPACES => 1, # Use namespaces
+                                 UNSAFE => 1,     # Disable wellformedness checking, to allow for openid:Delegate in elements
+                                 );
+    $writer->xmlDecl('UTF-8');
 
-        $doc .= "\n" unless $c == 0;
-        $doc .= "\t$ns=\"$des\"";
-        $c++;
+    foreach my $prefix (keys %{$self->{'namespaces'}}) {
+        my $uri = $self->{'namespaces'}->{$prefix};
+
+        if ($prefix eq 'xmlns') { # Default namespace
+            $writer->addPrefix($uri);
+        } else {
+            $writer->addPrefix($uri, $prefix);
+        }
+
+        $writer->forceNSDecl($uri);
     }
 
-    $doc .= ">\n";
-    $doc .= "\t<XRD>\n";
+    $writer->startTag('xrds:XRDS');
+    $writer->startTag('XRD');
 
     # You could have a server with no services, for testing or something,
     # but in most cases it would be useless
@@ -106,44 +111,40 @@ sub get_document {
 
     # Output service blocks
     foreach my $srv (@{$self->{'services'}}) {
-        $doc .= "\t<Service";
 
-        # Priority is output as an attribute to Service
-        $doc .= ' priority="' . $self->_exml(delete $srv->{'priority'}) . '"'
-            if defined $srv->{'priority'};
-
-        $doc .= ">\n";
-
-        # Create elements for each other argument
-        foreach (sort {lc($a) cmp lc($b)} keys %$srv) {
-            my $element = $self->_exml($_);
-            my $value   = $self->_exml($srv->{$_});
-
-            $doc .= "\t\t<$element>$srv->{$_}</$element>\n";
+        if (defined $srv->{'priority'}) {
+            $writer->startTag('Service',
+                              'priority' => $srv->{'priority'},
+                              );
+            delete $srv->{'priority'};
+        } else {
+            $writer->startTag('Service');
         }
 
-        $doc .= "\t</Service>\n";
+        # Create elements for each other argument
+        foreach my $element (sort {lc($a) cmp lc($b)} keys %$srv) {
+
+            # Are there multiple values for this element?
+            if (ref $srv->{$element} eq 'ARRAY') {
+                foreach (@{$srv->{$element}}) {
+                    $writer->startTag($element);
+                    $writer->characters($_);
+                    $writer->endTag($element);
+                }
+            } else {
+                $writer->startTag($element);
+                $writer->characters($srv->{$element});
+                $writer->endTag($element);
+            }
+        }
+        $writer->endTag('Service');
     }
 
-    $doc .= "\t</XRD>\n";
-    $doc .= "</xrds:XRDS>";
+    $writer->endTag('XRD');
+    $writer->endTag('xrds:XRDS');
+    $writer->end();
 
     return $doc;
-}
-
-# Escape characters which cannot be inserted into XMl
-sub _exml {
-    my $self = shift;
-    my $xml  = shift;
-
-    $xml =~ s/\&/&amp;/g;
-    $xml =~ s/</&lt;/g;
-    $xml =~ s/>/&gt;/g;
-    $xml =~ s/\"/&quot;/g;
-    $xml =~ s/\'/&apos;/g;
-    $xml =~ s/[\x00-\x08\x0B\x0C\x0E-\x1F]//g;
-
-    return $xml;
 }
 
 __END__
@@ -154,13 +155,15 @@ Net::YADIS::Server - simple library for YADIS enabled servers to generate
                      capability discovery documents
 
 =head1 SYNOPSIS
+
     use Net::YADIS::Server;
 
-    my $news = new Net::YADIS::Server();
+    my $nys = new Net::YADIS::Server();
 
     $nys->add_service(
-                      'type' => URI including version number representing service
-                      'URI'  => URI endpoint requuests should be made against
+                      'type'          => URI including version number representing service
+                      'URI'           => URI endpoint requuests should be made against
+                      'xmlns:Element' => Elements defined in a custom xmlns
                       );
 
 =head1 DESCRIPTION
@@ -188,18 +191,20 @@ Net::YADIS::Server object.
 
 Adds a service element to the capabilities document.  Any unknown elements
 will be added to the XRD service declaration as well.  Thus allowing service
-specific elements.
+specific elements.  Elements not defined in the xrd or xrds namespaces should
+be prefixed with their namespace. ie openid:Delegate.  All keys except for priority
+support being passed an Arrayref if you have multiple values for the element.
 
 =over
 
 =item C<type>
 
-Required.  URI/XRI including version number representing service
+Required.  URI including version number representing service
 
 =item C<URI>
 
-Required.  URI/XRI of the service's endpoint that a consumer (relying party)
-should make their requests against.
+Required.  URIof the service's endpoint that a consumer should make their
+requests against.
 
 =item C<priority>
 
@@ -211,7 +216,7 @@ http://www.oasis-open.org/committees/tc_home.php?wg_abbrev=xri
 
 =back
 
-=item $nys->add_namespaces( namespace => descriptor, namespace => descriptor, ... )
+=item $nys->add_namespaces( prefix => URI, prefix => URI, ... )
 
 Add, one or more, additional namespace declarations to your capabilities
 document.  Useful for services such as OpenID which can declare custom

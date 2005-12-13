@@ -4,5 +4,6 @@ ChangeLog
 lib/Net/YADIS/Server.pm
 t/00-no-services.t
 t/01-openid.t
-t/02-escape.t
+t/02-multi-service.t
+t/03-multi-uri.t
 META.yml                                 Module meta-data (added by MakeMaker)
